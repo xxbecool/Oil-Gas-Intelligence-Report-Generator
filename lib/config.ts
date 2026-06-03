@@ -5,18 +5,20 @@ export const CONFIG = {
   DEFAULT_ARTICLES: 15,
 
   // Timeouts (milliseconds)
-  FETCH_TIMEOUT_MS: 8000,
-  AI_TIMEOUT_MS: 45000,
-  TOTAL_TIMEOUT_MS: 55000,
+  // Edge Runtime hard limit = 25 s total.
+  // Budget: RSS ~6 s + AI ~14 s + PDF ~2 s = ~22 s (3 s headroom)
+  FETCH_TIMEOUT_MS: 6000,
+  AI_TIMEOUT_MS: 14000,
+  TOTAL_TIMEOUT_MS: 22000,
 
-  // AI Models
-  AI_PRIMARY_MODEL: "gemini-2.5-flash-preview-05-20",
-  AI_FALLBACK_MODEL: "gemini-2.0-flash",
+  // AI Models — stable, widely available, fast
+  AI_PRIMARY_MODEL: "gemini-2.0-flash",
+  AI_FALLBACK_MODEL: "gemini-2.0-flash-lite",
 
-  // Content limits
+  // Content limits — fewer articles = faster AI response
   MAX_ARTICLE_CONTENT_LENGTH: 2000,
   MAX_SUMMARY_LENGTH: 500,
-  MAX_PROMPT_ARTICLES: 15,
+  MAX_PROMPT_ARTICLES: 10,
 
   // PDF settings
   PDF_PAGE_WIDTH: 595,   // A4 width in points

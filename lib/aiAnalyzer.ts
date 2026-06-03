@@ -1,107 +1,142 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+/**
+ * AI analysis using the Gemini REST API directly.
+ *
+ * Using fetch instead of the @google/generative-ai SDK because:
+ * - fetch is guaranteed to work in Edge Runtime
+ * - No SDK initialisation overhead
+ * - Simpler timeout control via AbortSignal
+ */
 import { CONFIG } from "./config";
 import { logger } from "./logger";
 import type { AIAnalysis, Article } from "./types";
 
+// ── Gemini REST types ─────────────────────────────────────────────────────────
+
+interface GeminiResponse {
+  candidates?: Array<{
+    content?: { parts?: Array<{ text?: string }> };
+    finishReason?: string;
+  }>;
+  error?: { message: string; code: number; status: string };
+}
+
+// ── Prompt builder ────────────────────────────────────────────────────────────
+
 function buildPrompt(articles: Article[], focus: string): string {
-  const articleList = articles
+  const list = articles
     .slice(0, CONFIG.MAX_PROMPT_ARTICLES)
     .map((a, i) => {
-      const date = a.publishedAt ? a.publishedAt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "Recent";
-      return `[${i + 1}] SOURCE: ${a.source} | DATE: ${date} | CATEGORY: ${a.category}
-HEADLINE: ${a.title}
-SUMMARY: ${a.summary || a.content.slice(0, 300)}`;
+      const date = a.publishedAt
+        ? new Date(a.publishedAt).toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+          })
+        : "Recent";
+      return `[${i + 1}] ${a.source} | ${date}\nHEADLINE: ${a.title}\nSUMMARY: ${(a.summary || a.content).slice(0, 250)}`;
     })
-    .join("\n\n---\n\n");
+    .join("\n\n");
 
-  return `You are a senior Oil & Gas market intelligence analyst producing an executive briefing report.
+  return `You are a senior Oil & Gas market intelligence analyst.
+FOCUS: ${focus}
+ARTICLES (${articles.slice(0, CONFIG.MAX_PROMPT_ARTICLES).length} from trusted sources):
 
-FOCUS AREA: ${focus}
+${list}
 
-ARTICLES TO ANALYZE (${articles.length} articles collected from trusted industry sources):
+RULES:
+1. Analyze ONLY the articles above. Do NOT invent facts, prices, or quotes.
+2. Cite article numbers like [1] or [1][3] for every major claim.
+3. Use cautious language: "may", "could", "suggests", "indicates".
+4. Never state future prices with certainty.
 
-${articleList}
-
-CRITICAL INSTRUCTIONS:
-1. Analyze ONLY the articles provided above. Do NOT invent facts, prices, data, or quotes.
-2. Every major claim MUST cite article numbers like [1], [3], or [1][4].
-3. Use cautious language: "may", "could", "suggests", "indicates", "based on collected articles".
-4. Do NOT predict future prices with certainty.
-5. Focus on executive-level insights, not news summaries.
-6. If articles are insufficient for a section, write "Insufficient data from collected sources."
-
-Respond with ONLY valid JSON matching this exact structure:
+Return ONLY valid JSON with this exact structure:
 {
-  "executiveSummary": "3-4 sentence high-level overview for C-suite. Cite articles.",
-  "topStories": [
-    {
-      "title": "Story title",
-      "importance": "2-3 sentences on why this matters to executives and investors. Cite articles.",
-      "references": [1, 2]
-    }
-  ],
-  "marketImpact": "2-3 paragraphs on price, supply/demand, and market dynamics. Cite articles.",
-  "opecPolicyImpact": "1-2 paragraphs on OPEC+ strategy and production policy. Cite articles or state 'No OPEC coverage in collected articles.'",
-  "companyImpact": "1-2 paragraphs on major company developments and strategic moves. Cite articles.",
-  "risks": [
-    "Specific risk with article citation [N]"
-  ],
-  "opportunities": [
-    "Specific opportunity with article citation [N]"
-  ],
-  "watchlist": [
-    "Key development or data point executives should monitor"
-  ]
+  "executiveSummary": "3-4 sentences for C-suite. Cite articles.",
+  "topStories": [{"title":"","importance":"2-3 sentences. Cite articles.","references":[1]}],
+  "marketImpact": "2 paragraphs on price, supply/demand. Cite articles.",
+  "opecPolicyImpact": "1-2 paragraphs on OPEC+ strategy. Cite articles.",
+  "companyImpact": "1-2 paragraphs on company developments. Cite articles.",
+  "risks": ["Risk with citation [N]"],
+  "opportunities": ["Opportunity with citation [N]"],
+  "watchlist": ["Key item executives should monitor"]
+}
+Generate 3-5 items per array. Be concise.`;
 }
 
-Generate 3-5 top stories, 3-5 risks, 3-5 opportunities, and 4-6 watchlist items based on collected articles.`;
+// ── Gemini REST call ──────────────────────────────────────────────────────────
+
+async function callGemini(
+  modelId: string,
+  prompt: string,
+  apiKey: string
+): Promise<string> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.3,
+        topP: 0.85,
+        maxOutputTokens: 2500,
+        responseMimeType: "application/json",
+      },
+    }),
+    signal: AbortSignal.timeout(CONFIG.AI_TIMEOUT_MS),
+  });
+
+  const data = (await response.json()) as GeminiResponse;
+
+  if (!response.ok || data.error) {
+    throw new Error(
+      data.error?.message ?? `Gemini API error ${response.status}`
+    );
+  }
+
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) {
+    const reason = data.candidates?.[0]?.finishReason;
+    throw new Error(`Empty Gemini response (finishReason: ${reason ?? "unknown"})`);
+  }
+
+  return text;
 }
 
-function parseAIResponse(text: string): AIAnalysis {
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error("No JSON found in AI response");
+// ── Response parser ───────────────────────────────────────────────────────────
 
-  const parsed = JSON.parse(jsonMatch[0]);
+function parseAnalysis(text: string): AIAnalysis {
+  // Gemini with responseMimeType="application/json" should return pure JSON,
+  // but strip any accidental markdown fences just in case.
+  const jsonText = text.replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
+  const parsed = JSON.parse(jsonText);
 
   return {
-    executiveSummary: String(parsed.executiveSummary || ""),
+    executiveSummary: String(parsed.executiveSummary ?? ""),
     topStories: Array.isArray(parsed.topStories)
       ? parsed.topStories.map((s: Record<string, unknown>) => ({
-          title: String(s.title || ""),
-          importance: String(s.importance || ""),
+          title: String(s.title ?? ""),
+          importance: String(s.importance ?? ""),
           references: Array.isArray(s.references)
-            ? s.references.map(Number).filter(Boolean)
+            ? (s.references as unknown[]).map(Number).filter(Boolean)
             : [],
         }))
       : [],
-    marketImpact: String(parsed.marketImpact || ""),
-    opecPolicyImpact: String(parsed.opecPolicyImpact || ""),
-    companyImpact: String(parsed.companyImpact || ""),
+    marketImpact: String(parsed.marketImpact ?? ""),
+    opecPolicyImpact: String(parsed.opecPolicyImpact ?? ""),
+    companyImpact: String(parsed.companyImpact ?? ""),
     risks: Array.isArray(parsed.risks) ? parsed.risks.map(String) : [],
-    opportunities: Array.isArray(parsed.opportunities) ? parsed.opportunities.map(String) : [],
-    watchlist: Array.isArray(parsed.watchlist) ? parsed.watchlist.map(String) : [],
+    opportunities: Array.isArray(parsed.opportunities)
+      ? parsed.opportunities.map(String)
+      : [],
+    watchlist: Array.isArray(parsed.watchlist)
+      ? parsed.watchlist.map(String)
+      : [],
   };
 }
 
-async function callGemini(model: string, prompt: string, apiKey: string): Promise<string> {
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const geminiModel = genAI.getGenerativeModel({ model });
-
-  const result = await geminiModel.generateContent({
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
-    generationConfig: {
-      temperature: 0.3,
-      topP: 0.85,
-      maxOutputTokens: 4096,
-      responseMimeType: "application/json",
-    },
-  });
-
-  const response = result.response;
-  const text = response.text();
-  if (!text) throw new Error("Empty response from Gemini");
-  return text;
-}
+// ── Public API ────────────────────────────────────────────────────────────────
 
 export async function analyzeArticles(
   articles: Article[],
@@ -110,7 +145,7 @@ export async function analyzeArticles(
   const apiKey = process.env.GEMINI_API_KEY;
 
   if (!apiKey) {
-    logger.warn("GEMINI_API_KEY not set — skipping AI analysis");
+    logger.warn("GEMINI_API_KEY not configured — skipping AI analysis");
     return null;
   }
 
@@ -121,29 +156,28 @@ export async function analyzeArticles(
 
   const prompt = buildPrompt(articles, focus);
 
-  const tryModel = async (modelName: string): Promise<AIAnalysis> => {
-    logger.info(`Attempting AI analysis with ${modelName}`);
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`AI timeout after ${CONFIG.AI_TIMEOUT_MS}ms`)), CONFIG.AI_TIMEOUT_MS)
-    );
-    const analysisPromise = callGemini(modelName, prompt, apiKey);
-    const text = await Promise.race([analysisPromise, timeoutPromise]);
-    return parseAIResponse(text);
+  const tryModel = async (modelId: string): Promise<AIAnalysis> => {
+    logger.info(`Calling Gemini REST API: ${modelId}`);
+    const text = await callGemini(modelId, prompt, apiKey);
+    return parseAnalysis(text);
   };
 
+  // Primary model
   try {
     const analysis = await tryModel(CONFIG.AI_PRIMARY_MODEL);
-    logger.info("AI analysis completed with primary model");
+    logger.info(`AI analysis done — model: ${CONFIG.AI_PRIMARY_MODEL}`);
     return analysis;
-  } catch (primaryErr) {
-    logger.warn(`Primary model failed: ${(primaryErr as Error).message} — trying fallback`);
-    try {
-      const analysis = await tryModel(CONFIG.AI_FALLBACK_MODEL);
-      logger.info("AI analysis completed with fallback model");
-      return analysis;
-    } catch (fallbackErr) {
-      logger.error("Both AI models failed", { error: (fallbackErr as Error).message });
-      return null;
-    }
+  } catch (err) {
+    logger.warn(`Primary model failed: ${(err as Error).message}`);
+  }
+
+  // Fallback model
+  try {
+    const analysis = await tryModel(CONFIG.AI_FALLBACK_MODEL);
+    logger.info(`AI analysis done — fallback: ${CONFIG.AI_FALLBACK_MODEL}`);
+    return analysis;
+  } catch (err) {
+    logger.error(`Fallback model also failed: ${(err as Error).message}`);
+    return null;
   }
 }
