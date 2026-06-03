@@ -160,18 +160,41 @@ async function callGeminiRest(
   // Surface API-level errors with actionable messages
   if (data.error) {
     const { code, status, message } = data.error;
-    if (code === 400) throw new Error(`Bad request to Gemini (${status}): ${message}`);
-    if (code === 401 || code === 403)
+
+    if (code === 401 || code === 403) {
       throw new Error(
-        `Gemini API key invalid or permission denied (${status}). ` +
-          "Check GEMINI_API_KEY in Vercel environment variables."
+        `QUOTA_OR_KEY: Gemini API key invalid or permission denied (${status}). ` +
+          "Check GEMINI_API_KEY in Vercel → Settings → Environment Variables."
       );
-    if (code === 429)
-      throw new Error("Gemini rate limit reached. Wait a minute and try again.");
-    if (code === 404)
+    }
+
+    if (code === 429) {
+      // "You exceeded your current quota" = daily/monthly limit hit
+      // Other 429s = per-minute rate limit
+      const isQuota =
+        message.toLowerCase().includes("quota") ||
+        message.toLowerCase().includes("exceeded");
+
+      if (isQuota) {
+        throw new Error(
+          `QUOTA_EXCEEDED: Free tier daily quota reached. ` +
+            "Options: (1) Wait until tomorrow for quota reset, " +
+            "(2) Enable billing at console.cloud.google.com/apis/api/generativelanguage.googleapis.com, " +
+            "(3) Generate report with AI disabled."
+        );
+      }
       throw new Error(
-        `Model "${modelId}" not found. It may have been retired — trying next model.`
+        `RATE_LIMIT: Gemini per-minute rate limit hit (${status}). ` +
+          "Wait 60 seconds and generate again."
       );
+    }
+
+    if (code === 404) {
+      throw new Error(
+        `MODEL_NOT_FOUND: Model "${modelId}" not found or retired — trying next model.`
+      );
+    }
+
     throw new Error(`Gemini API error ${code} (${status}): ${message}`);
   }
 
@@ -221,14 +244,15 @@ export async function analyzeArticles(
 
   // Try models in order of preference
   const models = [
-    CONFIG.AI_PRIMARY_MODEL,   // gemini-2.0-flash
-    CONFIG.AI_FALLBACK_MODEL,  // gemini-2.0-flash-lite
-    "gemini-1.5-flash",        // stable legacy fallback
+    CONFIG.AI_PRIMARY_MODEL,  // gemini-2.0-flash
+    CONFIG.AI_FALLBACK_MODEL, // gemini-2.0-flash-lite
+    "gemini-1.5-flash",       // stable legacy fallback
   ];
 
-  const errors: string[] = [];
+  let lastError = "";
 
-  for (const modelId of models) {
+  for (let i = 0; i < models.length; i++) {
+    const modelId = models[i];
     try {
       logger.info(`Trying Gemini model: ${modelId}`);
       const text = await callGeminiRest(modelId, prompt, apiKey);
@@ -238,16 +262,30 @@ export async function analyzeArticles(
     } catch (err) {
       const msg = (err as Error).message;
       logger.error(`Model ${modelId} failed: ${msg}`);
-      errors.push(`${modelId}: ${msg}`);
+      lastError = msg;
 
-      // Don't try further models on auth/key errors — all will fail the same way
-      if (msg.includes("API key") || msg.includes("permission denied")) {
-        break;
+      // Quota/auth errors affect all models — stop immediately, no point retrying
+      if (
+        msg.startsWith("QUOTA_EXCEEDED:") ||
+        msg.startsWith("QUOTA_OR_KEY:") ||
+        msg.startsWith("RATE_LIMIT:")
+      ) {
+        // Strip the internal prefix tag before returning to the user
+        return {
+          analysis: null,
+          error: msg.replace(/^[A-Z_]+:\s*/, ""),
+        };
+      }
+
+      // Small pause before trying the next model (avoids burst rate-limit cascade)
+      if (i < models.length - 1) {
+        await new Promise((r) => setTimeout(r, 1500));
       }
     }
   }
 
-  const combinedError = `AI analysis failed after trying ${errors.length} model(s). Last error: ${errors[errors.length - 1]}`;
-  logger.error(combinedError);
-  return { analysis: null, error: combinedError };
+  return {
+    analysis: null,
+    error: lastError.replace(/^[A-Z_]+:\s*/, "") || "AI analysis failed for unknown reason.",
+  };
 }
