@@ -234,11 +234,11 @@ export async function analyzeArticles(
 
   const models = [
     CONFIG.AI_PRIMARY_MODEL,         // google/gemini-2.0-flash-exp:free
-    CONFIG.AI_FALLBACK_MODEL,        // google/gemini-flash-1.5-8b:free
-    "meta-llama/llama-3.1-8b-instruct:free", // universal free fallback
+    CONFIG.AI_FALLBACK_MODEL,        // mistralai/mistral-7b-instruct:free
+    "meta-llama/llama-3.2-3b-instruct:free", // universal free fallback
   ];
 
-  let lastError = "";
+  const modelErrors: string[] = [];
 
   for (let i = 0; i < models.length; i++) {
     const modelId = models[i];
@@ -251,7 +251,7 @@ export async function analyzeArticles(
     } catch (err) {
       const msg = (err as Error).message;
       logger.error(`Model ${modelId} failed: ${msg}`);
-      lastError = msg;
+      modelErrors.push(`[${modelId}] ${msg.replace(/^[A-Z_]+:\s*/, "")}`);
 
       // Auth/key/quota errors affect all models — stop immediately
       if (
@@ -268,8 +268,9 @@ export async function analyzeArticles(
     }
   }
 
+  const combinedErrors = modelErrors.join(" | ");
   return {
     analysis: null,
-    error: lastError.replace(/^[A-Z_]+:\s*/, "") || "AI analysis failed for unknown reason.",
+    error: combinedErrors || "AI analysis failed for unknown reason.",
   };
 }

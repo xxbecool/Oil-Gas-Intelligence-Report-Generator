@@ -14,7 +14,7 @@ export const CONFIG = {
   // AI Models — OpenRouter model IDs (provider/model-name:tier)
   // Free-tier variants have rate limits but cost $0
   AI_PRIMARY_MODEL: "google/gemini-2.0-flash-exp:free",
-  AI_FALLBACK_MODEL: "google/gemini-flash-1.5-8b:free",
+  AI_FALLBACK_MODEL: "mistralai/mistral-7b-instruct:free",
 
   // Content limits — fewer articles = faster AI response
   MAX_ARTICLE_CONTENT_LENGTH: 2000,
