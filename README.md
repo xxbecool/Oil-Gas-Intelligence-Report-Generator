@@ -52,7 +52,7 @@ POST /api/generate-report
 | Styling      | Tailwind CSS + shadcn/ui primitives |
 | Icons        | Lucide React                        |
 | AI           | Google Gemini (gemini-2.5-flash)    |
-| News         | rss-parser + cheerio                |
+| News         | fast-xml-parser (Edge-compatible)   |
 | PDF          | pdf-lib                             |
 | Validation   | Zod                                 |
 | Dates        | date-fns                            |
@@ -119,29 +119,56 @@ npm run type-check
 
 ---
 
-## Deployment To Vercel
+## Deployment Options
 
-### Option 1: Vercel Dashboard (Recommended)
+### Free Option A — Vercel Hobby (Edge Runtime) ✅ RECOMMENDED
 
+The API route runs on **Vercel Edge Runtime** which gives **25 seconds free on the Hobby plan** — no upgrade required.
+
+| Plan | Serverless limit | Edge Runtime limit |
+|------|------------------|--------------------|
+| Hobby (free) | 10 s ❌ | **25 s ✅** |
+| Pro | 60 s | 25 s |
+
+**Deploy steps:**
 1. Push your code to GitHub
-2. Visit [vercel.com](https://vercel.com) and import the repository
-3. Add environment variables:
-   - `GEMINI_API_KEY` = your key
-4. Deploy
+2. Visit [vercel.com/new](https://vercel.com/new) and import the repository
+3. Add one environment variable: `GEMINI_API_KEY` = your key
+4. Deploy — done. No plan upgrade needed.
 
-### Option 2: Vercel CLI
-
+**Vercel CLI:**
 ```bash
 npm install -g vercel
-vercel
-# Follow prompts, then add env vars:
 vercel env add GEMINI_API_KEY
 vercel --prod
 ```
 
-### Vercel Configuration
+---
 
-The `api/generate-report` route has `maxDuration = 60` set for Vercel serverless functions. This is compatible with Vercel Pro/Enterprise plans. On the Hobby plan, the limit is 10 seconds, which is insufficient — **a Pro plan is required**.
+### Free Option B — Railway.app (No timeout at all)
+
+Railway runs the app as a container — there is no function timeout. Best for heavy or long-running reports.
+
+1. Sign up at [railway.app](https://railway.app) (free $5 credit/month)
+2. Click **New Project → Deploy from GitHub repo**
+3. Select your repository
+4. Add environment variable: `GEMINI_API_KEY` = your key
+5. Railway auto-detects Next.js and deploys — done
+
+**No code changes needed for Railway.**
+
+---
+
+### Free Option C — Render.com
+
+1. Sign up at [render.com](https://render.com)
+2. New Web Service → Connect your GitHub repo
+3. Build command: `npm install && npm run build`
+4. Start command: `npm start`
+5. Add env var: `GEMINI_API_KEY`
+6. Deploy
+
+> Note: Render free tier sleeps after 15 min of inactivity (30s cold start).
 
 ---
 
@@ -179,10 +206,11 @@ The `api/generate-report` route has `maxDuration = 60` set for Vercel serverless
 - Try with AI disabled to confirm the rest works
 
 ### Slow generation
-- RSS fetches have 8-second timeouts per source
-- AI analysis can take 10–30 seconds
+- RSS fetches have 8-second timeouts per source (concurrent — not sequential)
+- AI analysis can take 5–20 seconds
 - PDF generation is fast (~1 second)
-- Total time is typically 15–45 seconds
+- Total time is typically 10–25 seconds
+- Edge Runtime limit is 25 seconds — if AI analysis is slow, it falls back to articles-only PDF
 
 ### Build errors
 ```bash
@@ -196,7 +224,7 @@ npm run lint        # ESLint errors
 
 - **No real-time data**: Articles come from RSS feeds, which may have publishing delays
 - **No historical reports**: Each report is fresh; no persistence
-- **Vercel Hobby plan**: 10-second function limit is too short — Pro plan required
+- **Edge Runtime 25s cap**: AI analysis occasionally exceeds the limit; report falls back to articles-only mode gracefully
 - **Gemini rate limits**: Free tier may throttle under heavy usage
 - **RSS availability**: Some sources may not publish RSS or may change feed URLs
 
