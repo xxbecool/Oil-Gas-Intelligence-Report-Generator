@@ -10,45 +10,53 @@ export async function buildReport(request: ReportRequest): Promise<Uint8Array> {
 
   logger.info("Report generation started", { focus, maxArticles, includeAI });
 
-  // Stage 1: Collect articles
+  // Stage 1: Collect
   logger.info("Stage 1: Collecting articles from trusted sources");
-  const { articles: rawArticles, sourcesQueried, sourcesFailed } = await collectArticles(
-    focus,
-    maxArticles * 3 // fetch more, filter down
+  const { articles: rawArticles, sourcesQueried, sourcesFailed } =
+    await collectArticles(focus, maxArticles * 3);
+
+  logger.info(
+    `Collected ${rawArticles.length} raw articles from ${sourcesQueried} sources (${sourcesFailed} failed)`
   );
 
-  logger.info(`Collected ${rawArticles.length} raw articles from ${sourcesQueried} sources (${sourcesFailed} failed)`);
-
-  // Stage 2: Validate & deduplicate
+  // Stage 2: Filter & deduplicate
   logger.info("Stage 2: Filtering and deduplicating articles");
-  const filteredArticles = filterAndDeduplicate(rawArticles).slice(0, maxArticles);
+  const articles = filterAndDeduplicate(rawArticles).slice(0, maxArticles);
 
-  if (filteredArticles.length === 0) {
-    throw new Error("No relevant articles found after filtering. Please try again later.");
+  if (articles.length === 0) {
+    throw new Error(
+      "No relevant articles found after filtering. Please try again later."
+    );
   }
 
-  logger.info(`Using ${filteredArticles.length} articles for report`);
+  logger.info(`Using ${articles.length} articles for report`);
 
-  // Stage 3: AI Analysis
-  let analysis = null;
+  // Stage 3: AI analysis (always run analyzeArticles so we get the error message)
+  let aiAnalysis = null;
+  let aiError: string | null = null;
+
   if (includeAI) {
     logger.info("Stage 3: Running AI analysis");
-    analysis = await analyzeArticles(filteredArticles, focus);
+    const result = await analyzeArticles(articles, focus);
+    aiAnalysis = result.analysis;
+    aiError = result.error;
 
-    if (!analysis) {
-      logger.warn("AI analysis unavailable — proceeding without AI");
-    } else {
+    if (aiAnalysis) {
       logger.info("AI analysis completed successfully");
+    } else {
+      logger.warn(`AI analysis skipped: ${aiError}`);
     }
   } else {
-    logger.info("Stage 3: AI analysis skipped by user request");
+    logger.info("Stage 3: AI analysis disabled by user");
+    aiError = "AI analysis was disabled in report settings.";
   }
 
   // Stage 4: Generate PDF
   logger.info("Stage 4: Generating PDF report");
   const pdfBytes = await generatePDF({
-    articles: filteredArticles,
-    analysis,
+    articles,
+    analysis: aiAnalysis,
+    aiError,
     generatedAt: new Date(),
     focus,
     sourcesQueried,
