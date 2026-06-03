@@ -1,24 +1,32 @@
 /**
- * AI analysis via Gemini REST API (no SDK — guaranteed Edge Runtime safe).
+ * AI analysis via OpenRouter API (OpenAI-compatible, Edge Runtime safe).
  *
- * Returns AIResult so callers always know WHY analysis failed, not just that
- * it failed. The error message is threaded into the PDF "AI Not Available"
- * box so the user sees the exact reason without needing to check logs.
+ * OpenRouter gives access to 200+ models through one API key.
+ * We use free Gemini models by default; the key is set as OPENROUTER_API_KEY.
+ *
+ * Docs: https://openrouter.ai/docs
  */
 import { CONFIG } from "./config";
 import { logger } from "./logger";
 import type { AIAnalysis, AIResult, Article } from "./types";
 
-// ── Gemini REST response shape ────────────────────────────────────────────────
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-interface GeminiCandidate {
-  content?: { parts?: Array<{ text?: string }> };
-  finishReason?: string;
-}
+// ── OpenRouter response types ─────────────────────────────────────────────────
 
-interface GeminiResponse {
-  candidates?: GeminiCandidate[];
-  error?: { message: string; code: number; status: string };
+interface OpenRouterResponse {
+  choices?: Array<{
+    message?: { content?: string | null };
+    finish_reason?: string;
+  }>;
+  error?: {
+    message: string;
+    code?: number;
+    type?: string;
+    metadata?: Record<string, unknown>;
+  };
+  id?: string;
+  model?: string;
 }
 
 // ── Prompt ────────────────────────────────────────────────────────────────────
@@ -54,7 +62,7 @@ STRICT RULES:
 - Never state future prices with certainty.
 - If a section has no relevant coverage, write "Insufficient data from collected articles."
 
-Return ONLY a JSON object — no markdown, no explanation, just JSON:
+Return ONLY a valid JSON object — no markdown, no explanation, just the JSON:
 {
   "executiveSummary": "3-4 concise sentences for C-suite. Cite articles.",
   "topStories": [
@@ -74,24 +82,18 @@ Generate 3-5 topStories, 3-5 risks, 3-5 opportunities, 4-6 watchlist items.`;
 // ── JSON extraction ───────────────────────────────────────────────────────────
 
 function extractJson(text: string): string {
-  // Strip markdown code fences if present
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fenced) return fenced[1].trim();
 
-  // Find the outermost JSON object
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
-  if (start !== -1 && end !== -1 && end > start) {
-    return text.slice(start, end + 1);
-  }
+  if (start !== -1 && end > start) return text.slice(start, end + 1);
 
   return text.trim();
 }
 
 function parseAnalysis(text: string): AIAnalysis {
-  const json = extractJson(text);
-  const p = JSON.parse(json);
-
+  const p = JSON.parse(extractJson(text));
   return {
     executiveSummary: String(p.executiveSummary ?? ""),
     topStories: Array.isArray(p.topStories)
@@ -112,36 +114,35 @@ function parseAnalysis(text: string): AIAnalysis {
   };
 }
 
-// ── REST fetch with manual timeout ───────────────────────────────────────────
+// ── OpenRouter fetch ──────────────────────────────────────────────────────────
 
-async function callGeminiRest(
+async function callOpenRouter(
   modelId: string,
   prompt: string,
   apiKey: string
 ): Promise<string> {
-  const url =
-    `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
-
-  // Manual AbortController — more reliable than AbortSignal.timeout() in Edge
   const controller = new AbortController();
   const timer = setTimeout(
-    () => controller.abort(new Error(`Gemini timeout after ${CONFIG.AI_TIMEOUT_MS}ms`)),
+    () => controller.abort(new Error(`AI timeout after ${CONFIG.AI_TIMEOUT_MS}ms`)),
     CONFIG.AI_TIMEOUT_MS
   );
 
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await fetch(OPENROUTER_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        "HTTP-Referer": "https://oil-gas-intelligence.vercel.app",
+        "X-Title": "Oil & Gas Intelligence Report Generator",
+      },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.3,
-          topP: 0.85,
-          maxOutputTokens: 2500,
-          // responseMimeType omitted — parse JSON from text for max compatibility
-        },
+        model: modelId,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.3,
+        max_tokens: 2500,
+        top_p: 0.85,
       }),
       signal: controller.signal,
     });
@@ -149,89 +150,78 @@ async function callGeminiRest(
     clearTimeout(timer);
   }
 
-  // Parse response body
-  let data: GeminiResponse;
+  let data: OpenRouterResponse;
   try {
-    data = (await response.json()) as GeminiResponse;
+    data = (await response.json()) as OpenRouterResponse;
   } catch {
-    throw new Error(`Gemini returned non-JSON body (HTTP ${response.status})`);
+    throw new Error(`Non-JSON response from OpenRouter (HTTP ${response.status})`);
   }
 
-  // Surface API-level errors with actionable messages
+  // OpenRouter error object
   if (data.error) {
-    const { code, status, message } = data.error;
+    const { code, type, message } = data.error;
 
-    if (code === 401 || code === 403) {
+    if (response.status === 401 || type === "auth_error" || code === 401) {
       throw new Error(
-        `QUOTA_OR_KEY: Gemini API key invalid or permission denied (${status}). ` +
-          "Check GEMINI_API_KEY in Vercel → Settings → Environment Variables."
+        "QUOTA_OR_KEY: OpenRouter API key is invalid. " +
+          "Check OPENROUTER_API_KEY in Vercel → Settings → Environment Variables."
       );
     }
-
-    if (code === 429) {
-      // "You exceeded your current quota" = daily/monthly limit hit
-      // Other 429s = per-minute rate limit
+    if (response.status === 402 || code === 402) {
+      throw new Error(
+        "QUOTA_EXCEEDED: OpenRouter credits are exhausted. " +
+          "Add credits at openrouter.ai/credits, or switch to a free model."
+      );
+    }
+    if (response.status === 429 || code === 429) {
       const isQuota =
         message.toLowerCase().includes("quota") ||
-        message.toLowerCase().includes("exceeded");
-
-      if (isQuota) {
-        throw new Error(
-          `QUOTA_EXCEEDED: Free tier daily quota reached. ` +
-            "Options: (1) Wait until tomorrow for quota reset, " +
-            "(2) Enable billing at console.cloud.google.com/apis/api/generativelanguage.googleapis.com, " +
-            "(3) Generate report with AI disabled."
-        );
-      }
+        message.toLowerCase().includes("exceeded") ||
+        message.toLowerCase().includes("limit");
       throw new Error(
-        `RATE_LIMIT: Gemini per-minute rate limit hit (${status}). ` +
-          "Wait 60 seconds and generate again."
+        isQuota
+          ? "QUOTA_EXCEEDED: Rate/quota limit reached on this model. " +
+              "Try again in a minute or switch to a different model."
+          : `RATE_LIMIT: ${message}`
+      );
+    }
+    if (response.status === 404 || code === 404) {
+      throw new Error(
+        `MODEL_NOT_FOUND: Model "${modelId}" not found on OpenRouter — trying next model.`
       );
     }
 
-    if (code === 404) {
-      throw new Error(
-        `MODEL_NOT_FOUND: Model "${modelId}" not found or retired — trying next model.`
-      );
-    }
-
-    throw new Error(`Gemini API error ${code} (${status}): ${message}`);
+    throw new Error(`OpenRouter error (${response.status}): ${message}`);
   }
 
   if (!response.ok) {
-    throw new Error(`Gemini HTTP ${response.status} ${response.statusText}`);
+    throw new Error(`OpenRouter HTTP ${response.status} ${response.statusText}`);
   }
 
-  const candidate = data.candidates?.[0];
-  const text = candidate?.content?.parts?.[0]?.text;
-
-  if (!text) {
-    const reason = candidate?.finishReason ?? "unknown";
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) {
+    const reason = data.choices?.[0]?.finish_reason ?? "unknown";
     throw new Error(
-      `Gemini returned no text (finishReason: ${reason}). ` +
-        "Prompt may have been blocked by safety filters."
+      `Model returned no content (finish_reason: ${reason}). ` +
+        "The prompt may have triggered a content filter."
     );
   }
 
-  return text;
+  return content;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/**
- * Run AI analysis. Always returns an AIResult — never throws.
- * On failure, analysis is null and error contains the human-readable reason.
- */
 export async function analyzeArticles(
   articles: Article[],
   focus: string
 ): Promise<AIResult> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.OPENROUTER_API_KEY;
 
   if (!apiKey) {
     const error =
-      "GEMINI_API_KEY environment variable is not set. " +
-      "Add it in Vercel → Project Settings → Environment Variables, then redeploy.";
+      "OPENROUTER_API_KEY is not set. " +
+      "Add it in Vercel → Project → Settings → Environment Variables, then redeploy.";
     logger.warn(error);
     return { analysis: null, error };
   }
@@ -242,11 +232,10 @@ export async function analyzeArticles(
 
   const prompt = buildPrompt(articles, focus);
 
-  // Try models in order of preference
   const models = [
-    CONFIG.AI_PRIMARY_MODEL,  // gemini-2.0-flash
-    CONFIG.AI_FALLBACK_MODEL, // gemini-2.0-flash-lite
-    "gemini-1.5-flash",       // stable legacy fallback
+    CONFIG.AI_PRIMARY_MODEL,         // google/gemini-2.0-flash-exp:free
+    CONFIG.AI_FALLBACK_MODEL,        // google/gemini-flash-1.5-8b:free
+    "meta-llama/llama-3.1-8b-instruct:free", // universal free fallback
   ];
 
   let lastError = "";
@@ -254,8 +243,8 @@ export async function analyzeArticles(
   for (let i = 0; i < models.length; i++) {
     const modelId = models[i];
     try {
-      logger.info(`Trying Gemini model: ${modelId}`);
-      const text = await callGeminiRest(modelId, prompt, apiKey);
+      logger.info(`Calling OpenRouter — model: ${modelId}`);
+      const text = await callOpenRouter(modelId, prompt, apiKey);
       const analysis = parseAnalysis(text);
       logger.info(`AI analysis complete — model: ${modelId}`);
       return { analysis, error: null };
@@ -264,20 +253,15 @@ export async function analyzeArticles(
       logger.error(`Model ${modelId} failed: ${msg}`);
       lastError = msg;
 
-      // Quota/auth errors affect all models — stop immediately, no point retrying
+      // Auth/key/quota errors affect all models — stop immediately
       if (
-        msg.startsWith("QUOTA_EXCEEDED:") ||
         msg.startsWith("QUOTA_OR_KEY:") ||
-        msg.startsWith("RATE_LIMIT:")
+        msg.startsWith("QUOTA_EXCEEDED:")
       ) {
-        // Strip the internal prefix tag before returning to the user
-        return {
-          analysis: null,
-          error: msg.replace(/^[A-Z_]+:\s*/, ""),
-        };
+        return { analysis: null, error: msg.replace(/^[A-Z_]+:\s*/, "") };
       }
 
-      // Small pause before trying the next model (avoids burst rate-limit cascade)
+      // Pause before next model to avoid rate-limit cascade
       if (i < models.length - 1) {
         await new Promise((r) => setTimeout(r, 1500));
       }

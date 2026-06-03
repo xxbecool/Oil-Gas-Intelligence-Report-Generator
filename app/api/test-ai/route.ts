@@ -1,35 +1,33 @@
 /**
- * Diagnostic endpoint — call GET /api/test-ai to verify Gemini connectivity.
- * Returns JSON with pass/fail status and the specific error if it fails.
- * Safe to expose: only pings Gemini with a tiny prompt, never reveals the key.
+ * Diagnostic endpoint — GET /api/test-ai
+ * Verifies OpenRouter API key and connectivity with a tiny test prompt.
+ * Returns JSON {ok, model, error, hint} — safe to visit in browser.
  */
 import { NextResponse } from "next/server";
 
 export const runtime = "edge";
 
-interface GeminiResponse {
-  candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-  error?: { message: string; code: number; status: string };
+interface OpenRouterResponse {
+  choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
+  error?: { message: string; code?: number; type?: string };
+  model?: string;
 }
 
 export async function GET(): Promise<NextResponse> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.OPENROUTER_API_KEY;
 
   if (!apiKey) {
-    return NextResponse.json(
-      {
-        ok: false,
-        step: "env",
-        error:
-          "GEMINI_API_KEY is not set. Go to Vercel → Project → Settings → " +
-          "Environment Variables, add GEMINI_API_KEY, then redeploy.",
-      },
-      { status: 200 }
-    );
+    return NextResponse.json({
+      ok: false,
+      step: "env",
+      error: "OPENROUTER_API_KEY is not set.",
+      hint:
+        "Go to Vercel → your project → Settings → Environment Variables. " +
+        "Add OPENROUTER_API_KEY with your key from openrouter.ai/keys, then redeploy.",
+    });
   }
 
-  const model = "gemini-2.0-flash";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const model = "google/gemini-2.0-flash-exp:free";
 
   try {
     const controller = new AbortController();
@@ -37,12 +35,19 @@ export async function GET(): Promise<NextResponse> {
 
     let response: Response;
     try {
-      response = await fetch(url, {
+      response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          "HTTP-Referer": "https://oil-gas-intelligence.vercel.app",
+          "X-Title": "Oil & Gas Intelligence Report Generator",
+        },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: "Reply with the single word: OK" }] }],
-          generationConfig: { maxOutputTokens: 10, temperature: 0 },
+          model,
+          messages: [{ role: "user", content: "Reply with the single word: OK" }],
+          max_tokens: 10,
+          temperature: 0,
         }),
         signal: controller.signal,
       });
@@ -50,51 +55,47 @@ export async function GET(): Promise<NextResponse> {
       clearTimeout(timer);
     }
 
-    const data = (await response.json()) as GeminiResponse;
+    const data = (await response.json()) as OpenRouterResponse;
 
     if (data.error) {
-      const { code, status, message } = data.error;
-      return NextResponse.json(
-        {
-          ok: false,
-          step: "api_call",
-          httpStatus: response.status,
-          geminiCode: code,
-          geminiStatus: status,
-          error: message,
-          hint:
-            code === 401 || code === 403
-              ? "API key is invalid or doesn't have Gemini access. " +
-                "Generate a new key at https://aistudio.google.com/app/apikey"
-              : code === 429
-              ? "Rate limit hit. Wait a minute and retry."
-              : code === 404
-              ? `Model "${model}" not found.`
-              : "Check the Gemini API dashboard for more details.",
-        },
-        { status: 200 }
-      );
+      const { code, type, message } = data.error;
+      return NextResponse.json({
+        ok: false,
+        step: "api_call",
+        httpStatus: response.status,
+        code,
+        type,
+        error: message,
+        hint:
+          response.status === 401
+            ? "API key is invalid. Get a fresh key at openrouter.ai/keys"
+            : response.status === 402
+            ? "No credits. Add credits at openrouter.ai/credits (free models need $1 minimum)"
+            : response.status === 429
+            ? "Rate limit hit. Wait 60 seconds and try again."
+            : response.status === 404
+            ? `Model "${model}" not found. It may have been renamed — check openrouter.ai/models`
+            : "Check openrouter.ai for account status.",
+      });
     }
 
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+    const content = data.choices?.[0]?.message?.content ?? "";
     return NextResponse.json({
       ok: true,
-      model,
-      response: text.trim(),
-      message: "Gemini API is working correctly. AI analysis should appear in reports.",
+      model: data.model ?? model,
+      response: content.trim(),
+      message:
+        "OpenRouter is working correctly. AI analysis will appear in reports.",
     });
   } catch (err) {
     const msg = (err as Error).message;
-    return NextResponse.json(
-      {
-        ok: false,
-        step: "fetch",
-        error: msg,
-        hint: msg.includes("abort")
-          ? "Request timed out after 10s. Gemini may be unreachable from your deployment region."
-          : "Network error reaching Gemini API.",
-      },
-      { status: 200 }
-    );
+    return NextResponse.json({
+      ok: false,
+      step: "fetch",
+      error: msg,
+      hint: msg.includes("abort")
+        ? "Request timed out after 10s — OpenRouter may be temporarily unreachable."
+        : "Network error reaching OpenRouter.",
+    });
   }
 }

@@ -11,9 +11,10 @@ export const CONFIG = {
   AI_TIMEOUT_MS: 14000,
   TOTAL_TIMEOUT_MS: 22000,
 
-  // AI Models — stable, widely available, fast
-  AI_PRIMARY_MODEL: "gemini-2.0-flash",
-  AI_FALLBACK_MODEL: "gemini-2.0-flash-lite",
+  // AI Models — OpenRouter model IDs (provider/model-name:tier)
+  // Free-tier variants have rate limits but cost $0
+  AI_PRIMARY_MODEL: "google/gemini-2.0-flash-exp:free",
+  AI_FALLBACK_MODEL: "google/gemini-flash-1.5-8b:free",
 
   // Content limits — fewer articles = faster AI response
   MAX_ARTICLE_CONTENT_LENGTH: 2000,
