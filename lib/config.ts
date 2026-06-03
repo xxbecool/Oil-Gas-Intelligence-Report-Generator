@@ -6,15 +6,16 @@ export const CONFIG = {
 
   // Timeouts (milliseconds)
   // Edge Runtime hard limit = 25 s total.
-  // Budget: RSS ~6 s + AI ~14 s + PDF ~2 s = ~22 s (3 s headroom)
-  FETCH_TIMEOUT_MS: 6000,
-  AI_TIMEOUT_MS: 14000,
+  // Budget: RSS ~5 s + AI ~8 s (per model) + PDF ~2 s
+  // Worst case: 2 timeouts = 5 + 8 + 0.3 + 8 + 2 = 23.3 s ✓
+  FETCH_TIMEOUT_MS: 5000,
+  AI_TIMEOUT_MS: 8000,
   TOTAL_TIMEOUT_MS: 22000,
 
   // AI Models — OpenRouter model IDs (provider/model-name:tier)
   // Free-tier variants have rate limits but cost $0
-  AI_PRIMARY_MODEL: "google/gemini-2.0-flash-exp:free",
-  AI_FALLBACK_MODEL: "mistralai/mistral-7b-instruct:free",
+  AI_PRIMARY_MODEL: "mistralai/mistral-7b-instruct:free",
+  AI_FALLBACK_MODEL: "google/gemma-2-9b-it:free",
 
   // Content limits — fewer articles = faster AI response
   MAX_ARTICLE_CONTENT_LENGTH: 2000,
