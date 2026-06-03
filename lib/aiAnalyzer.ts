@@ -233,9 +233,9 @@ export async function analyzeArticles(
   const prompt = buildPrompt(articles, focus);
 
   const models = [
-    CONFIG.AI_PRIMARY_MODEL,         // google/gemini-2.0-flash-exp:free
-    CONFIG.AI_FALLBACK_MODEL,        // mistralai/mistral-7b-instruct:free
-    "meta-llama/llama-3.2-3b-instruct:free", // universal free fallback
+    CONFIG.AI_PRIMARY_MODEL,    // mistralai/mistral-7b-instruct:free
+    CONFIG.AI_FALLBACK_MODEL,   // google/gemma-2-9b-it:free
+    "meta-llama/llama-3.2-3b-instruct:free",
   ];
 
   const modelErrors: string[] = [];
@@ -261,9 +261,9 @@ export async function analyzeArticles(
         return { analysis: null, error: msg.replace(/^[A-Z_]+:\s*/, "") };
       }
 
-      // Pause before next model to avoid rate-limit cascade
+      // Brief pause before next model
       if (i < models.length - 1) {
-        await new Promise((r) => setTimeout(r, 1500));
+        await new Promise((r) => setTimeout(r, 300));
       }
     }
   }
