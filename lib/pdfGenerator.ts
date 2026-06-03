@@ -3,6 +3,7 @@ import { format } from "date-fns";
 import { CONFIG } from "./config";
 import type { AIAnalysis, Article } from "./types";
 
+
 // ── Color palette ────────────────────────────────────────────────────────────
 const COLORS = {
   darkNavy: rgb(0.04, 0.12, 0.22),
@@ -652,22 +653,25 @@ async function drawSourceReferences(state: DrawState, articles: Article[]): Prom
 
 // ── No-AI fallback section ────────────────────────────────────────────────────
 
-async function drawNoAINotice(state: DrawState): Promise<void> {
-  await ensureSpace(state, 60);
+async function drawNoAINotice(state: DrawState, reason?: string | null): Promise<void> {
+  const boxHeight = reason ? 90 : 68;
+  await ensureSpace(state, boxHeight + 16);
+
   state.currentPage.drawRectangle({
     x: MARGIN,
-    y: state.y - 44,
+    y: state.y - boxHeight,
     width: CONTENT_WIDTH,
-    height: 52,
+    height: boxHeight + 8,
     color: rgb(0.99, 0.97, 0.92),
   });
   state.currentPage.drawRectangle({
     x: MARGIN,
-    y: state.y - 44,
+    y: state.y - boxHeight,
     width: 3,
-    height: 52,
+    height: boxHeight + 8,
     color: COLORS.accentGold,
   });
+
   state.y -= 8;
   await drawText(state, "AI Analysis Not Available", {
     size: 11,
@@ -675,12 +679,23 @@ async function drawNoAINotice(state: DrawState): Promise<void> {
     color: COLORS.darkNavy,
     indent: 10,
   });
-  await drawText(state, "The AI analysis module was unavailable during this report generation. All collected articles are included below in the Full News Brief section.", {
-    size: 10,
-    color: COLORS.mediumGray,
-    indent: 10,
-  });
-  state.y -= 8;
+  await drawText(
+    state,
+    "The AI analysis module could not complete. All collected articles are included in the Full News Brief below.",
+    { size: 10, color: COLORS.mediumGray, indent: 10 }
+  );
+
+  if (reason) {
+    state.y -= 4;
+    await drawText(state, `Reason: ${sanitizeText(reason)}`, {
+      size: 9,
+      font: state.italicFont,
+      color: COLORS.riskRed,
+      indent: 10,
+    });
+  }
+
+  state.y -= 10;
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
@@ -688,6 +703,8 @@ async function drawNoAINotice(state: DrawState): Promise<void> {
 export interface PDFGeneratorOptions {
   articles: Article[];
   analysis: AIAnalysis | null;
+  /** Reason shown in PDF when analysis is null */
+  aiError?: string | null;
   generatedAt: Date;
   focus: string;
   sourcesQueried: number;
@@ -695,7 +712,7 @@ export interface PDFGeneratorOptions {
 }
 
 export async function generatePDF(options: PDFGeneratorOptions): Promise<Uint8Array> {
-  const { articles, analysis, generatedAt, focus, sourcesQueried, includeSources } = options;
+  const { articles, analysis, aiError, generatedAt, focus, sourcesQueried, includeSources } = options;
 
   const doc = await PDFDocument.create();
   doc.setTitle("Oil & Gas Intelligence Report");
@@ -769,7 +786,7 @@ export async function generatePDF(options: PDFGeneratorOptions): Promise<Uint8Ar
       await drawWatchlist(state, analysis.watchlist);
     }
   } else {
-    await drawNoAINotice(state);
+    await drawNoAINotice(state, aiError);
   }
 
   // Full News Brief

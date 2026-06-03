@@ -63,6 +63,12 @@ export interface AIAnalysis {
   watchlist: string[];
 }
 
+export interface AIResult {
+  analysis: AIAnalysis | null;
+  /** Human-readable reason why analysis is null, shown in the PDF. */
+  error: string | null;
+}
+
 export interface ReportRequest {
   maxArticles: number;
   includeAI: boolean;
