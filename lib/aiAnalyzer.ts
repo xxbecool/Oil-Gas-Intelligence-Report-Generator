@@ -210,6 +210,45 @@ async function callOpenRouter(
   return content;
 }
 
+// ── Dynamic free-model discovery ──────────────────────────────────────────────
+
+interface OpenRouterModelItem {
+  id: string;
+  pricing?: { prompt?: string; completion?: string };
+  context_length?: number;
+  architecture?: { modality?: string };
+}
+
+async function fetchFreeModelIds(apiKey: string): Promise<string[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4000);
+  try {
+    const resp = await fetch("https://openrouter.ai/api/v1/models", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: controller.signal,
+    });
+    if (!resp.ok) return [];
+    const data = (await resp.json()) as { data?: OpenRouterModelItem[] };
+    return (data.data ?? [])
+      .filter((m) => {
+        const isFree =
+          m.pricing?.prompt === "0" && m.pricing?.completion === "0";
+        const isText =
+          !m.architecture?.modality ||
+          m.architecture.modality.startsWith("text");
+        const bigEnough = (m.context_length ?? 0) >= 8192;
+        return isFree && isText && bigEnough && !m.id.includes(":extended");
+      })
+      .sort((a, b) => (b.context_length ?? 0) - (a.context_length ?? 0))
+      .map((m) => m.id)
+      .slice(0, 4);
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export async function analyzeArticles(
@@ -232,11 +271,13 @@ export async function analyzeArticles(
 
   const prompt = buildPrompt(articles, focus);
 
-  const models = [
-    CONFIG.AI_PRIMARY_MODEL,    // mistralai/mistral-7b-instruct:free
-    CONFIG.AI_FALLBACK_MODEL,   // google/gemma-2-9b-it:free
-    "meta-llama/llama-3.2-3b-instruct:free",
-  ];
+  // Ask OpenRouter which free models are currently available
+  const discovered = await fetchFreeModelIds(apiKey);
+  const models = discovered.length > 0
+    ? discovered.slice(0, 3)
+    : [CONFIG.AI_PRIMARY_MODEL, CONFIG.AI_FALLBACK_MODEL, "meta-llama/llama-3.2-3b-instruct:free"];
+
+  logger.info(`Using models: ${models.join(", ")}`);
 
   const modelErrors: string[] = [];
 
