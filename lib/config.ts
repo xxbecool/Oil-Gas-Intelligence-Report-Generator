@@ -12,10 +12,9 @@ export const CONFIG = {
   AI_TIMEOUT_MS: 8000,
   TOTAL_TIMEOUT_MS: 22000,
 
-  // AI Models — OpenRouter model IDs (provider/model-name:tier)
-  // Free-tier variants have rate limits but cost $0
-  AI_PRIMARY_MODEL: "mistralai/mistral-7b-instruct:free",
-  AI_FALLBACK_MODEL: "google/gemma-2-9b-it:free",
+  // AI Models — Groq model IDs (all free on developer tier)
+  AI_PRIMARY_MODEL: "llama-3.3-70b-versatile",
+  AI_FALLBACK_MODEL: "mixtral-8x7b-32768",
 
   // Content limits — fewer articles = faster AI response
   MAX_ARTICLE_CONTENT_LENGTH: 2000,

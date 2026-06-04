@@ -1,31 +1,36 @@
 /**
- * AI analysis via OpenRouter API (OpenAI-compatible, Edge Runtime safe).
+ * AI analysis via Groq API (OpenAI-compatible, Edge Runtime safe).
  *
- * OpenRouter gives access to 200+ models through one API key.
- * We use free Gemini models by default; the key is set as OPENROUTER_API_KEY.
+ * Groq provides ultra-fast inference (1-3s vs 5-15s on other providers).
+ * Free developer tier — set GROQ_API_KEY from console.groq.com/keys.
  *
- * Docs: https://openrouter.ai/docs
+ * Docs: https://console.groq.com/docs/openai
  */
 import { CONFIG } from "./config";
 import { logger } from "./logger";
 import type { AIAnalysis, AIResult, Article } from "./types";
 
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
-// ── OpenRouter response types ─────────────────────────────────────────────────
+// Free models on Groq developer tier (fast inference, no credits needed)
+const GROQ_MODELS = [
+  "llama-3.3-70b-versatile",  // most capable, best for structured JSON
+  "mixtral-8x7b-32768",        // reliable fallback
+  "llama-3.1-8b-instant",      // fastest last-resort
+];
 
-interface OpenRouterResponse {
+// ── Response types ────────────────────────────────────────────────────────────
+
+interface GroqResponse {
   choices?: Array<{
     message?: { content?: string | null };
     finish_reason?: string;
   }>;
   error?: {
     message: string;
-    code?: number;
     type?: string;
-    metadata?: Record<string, unknown>;
+    code?: string | number;
   };
-  id?: string;
   model?: string;
 }
 
@@ -114,9 +119,9 @@ function parseAnalysis(text: string): AIAnalysis {
   };
 }
 
-// ── OpenRouter fetch ──────────────────────────────────────────────────────────
+// ── Groq fetch ────────────────────────────────────────────────────────────────
 
-async function callOpenRouter(
+async function callGroq(
   modelId: string,
   prompt: string,
   apiKey: string
@@ -129,13 +134,11 @@ async function callOpenRouter(
 
   let response: Response;
   try {
-    response = await fetch(OPENROUTER_URL, {
+    response = await fetch(GROQ_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
-        "HTTP-Referer": "https://oil-gas-intelligence.vercel.app",
-        "X-Title": "Oil & Gas Intelligence Report Generator",
       },
       body: JSON.stringify({
         model: modelId,
@@ -150,103 +153,43 @@ async function callOpenRouter(
     clearTimeout(timer);
   }
 
-  let data: OpenRouterResponse;
+  let data: GroqResponse;
   try {
-    data = (await response.json()) as OpenRouterResponse;
+    data = (await response.json()) as GroqResponse;
   } catch {
-    throw new Error(`Non-JSON response from OpenRouter (HTTP ${response.status})`);
+    throw new Error(`Non-JSON response from Groq (HTTP ${response.status})`);
   }
 
-  // OpenRouter error object
   if (data.error) {
-    const { code, type, message } = data.error;
+    const { type, message } = data.error;
 
-    if (response.status === 401 || type === "auth_error" || code === 401) {
+    if (response.status === 401 || type === "invalid_api_key") {
       throw new Error(
-        "QUOTA_OR_KEY: OpenRouter API key is invalid. " +
-          "Check OPENROUTER_API_KEY in Vercel → Settings → Environment Variables."
+        "QUOTA_OR_KEY: Groq API key is invalid. " +
+          "Check GROQ_API_KEY in Vercel → Settings → Environment Variables."
       );
     }
-    if (response.status === 402 || code === 402) {
-      throw new Error(
-        "QUOTA_EXCEEDED: OpenRouter credits are exhausted. " +
-          "Add credits at openrouter.ai/credits, or switch to a free model."
-      );
+    if (response.status === 429) {
+      throw new Error(`RATE_LIMIT: ${message}`);
     }
-    if (response.status === 429 || code === 429) {
-      const isQuota =
-        message.toLowerCase().includes("quota") ||
-        message.toLowerCase().includes("exceeded") ||
-        message.toLowerCase().includes("limit");
-      throw new Error(
-        isQuota
-          ? "QUOTA_EXCEEDED: Rate/quota limit reached on this model. " +
-              "Try again in a minute or switch to a different model."
-          : `RATE_LIMIT: ${message}`
-      );
-    }
-    if (response.status === 404 || code === 404) {
-      throw new Error(
-        `MODEL_NOT_FOUND: Model "${modelId}" not found on OpenRouter — trying next model.`
-      );
+    if (response.status === 400 && message.toLowerCase().includes("model")) {
+      throw new Error(`MODEL_NOT_FOUND: Model "${modelId}" error — trying next.`);
     }
 
-    throw new Error(`OpenRouter error (${response.status}): ${message}`);
+    throw new Error(`Groq error (${response.status}): ${message}`);
   }
 
   if (!response.ok) {
-    throw new Error(`OpenRouter HTTP ${response.status} ${response.statusText}`);
+    throw new Error(`Groq HTTP ${response.status} ${response.statusText}`);
   }
 
   const content = data.choices?.[0]?.message?.content;
   if (!content) {
     const reason = data.choices?.[0]?.finish_reason ?? "unknown";
-    throw new Error(
-      `Model returned no content (finish_reason: ${reason}). ` +
-        "The prompt may have triggered a content filter."
-    );
+    throw new Error(`Model returned no content (finish_reason: ${reason}).`);
   }
 
   return content;
-}
-
-// ── Dynamic free-model discovery ──────────────────────────────────────────────
-
-interface OpenRouterModelItem {
-  id: string;
-  pricing?: { prompt?: string; completion?: string };
-  context_length?: number;
-  architecture?: { modality?: string };
-}
-
-async function fetchFreeModelIds(apiKey: string): Promise<string[]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 4000);
-  try {
-    const resp = await fetch("https://openrouter.ai/api/v1/models", {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: controller.signal,
-    });
-    if (!resp.ok) return [];
-    const data = (await resp.json()) as { data?: OpenRouterModelItem[] };
-    return (data.data ?? [])
-      .filter((m) => {
-        const isFree =
-          m.pricing?.prompt === "0" && m.pricing?.completion === "0";
-        const isText =
-          !m.architecture?.modality ||
-          m.architecture.modality.startsWith("text");
-        const bigEnough = (m.context_length ?? 0) >= 8192;
-        return isFree && isText && bigEnough && !m.id.includes(":extended");
-      })
-      .sort((a, b) => (b.context_length ?? 0) - (a.context_length ?? 0))
-      .map((m) => m.id)
-      .slice(0, 4);
-  } catch {
-    return [];
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -255,12 +198,13 @@ export async function analyzeArticles(
   articles: Article[],
   focus: string
 ): Promise<AIResult> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = process.env.GROQ_API_KEY;
 
   if (!apiKey) {
     const error =
-      "OPENROUTER_API_KEY is not set. " +
-      "Add it in Vercel → Project → Settings → Environment Variables, then redeploy.";
+      "GROQ_API_KEY is not set. " +
+      "Add it in Vercel → Project → Settings → Environment Variables, then redeploy. " +
+      "Get a free key at console.groq.com/keys";
     logger.warn(error);
     return { analysis: null, error };
   }
@@ -270,22 +214,13 @@ export async function analyzeArticles(
   }
 
   const prompt = buildPrompt(articles, focus);
-
-  // Ask OpenRouter which free models are currently available
-  const discovered = await fetchFreeModelIds(apiKey);
-  const models = discovered.length > 0
-    ? discovered.slice(0, 3)
-    : [CONFIG.AI_PRIMARY_MODEL, CONFIG.AI_FALLBACK_MODEL, "meta-llama/llama-3.2-3b-instruct:free"];
-
-  logger.info(`Using models: ${models.join(", ")}`);
-
   const modelErrors: string[] = [];
 
-  for (let i = 0; i < models.length; i++) {
-    const modelId = models[i];
+  for (let i = 0; i < GROQ_MODELS.length; i++) {
+    const modelId = GROQ_MODELS[i];
     try {
-      logger.info(`Calling OpenRouter — model: ${modelId}`);
-      const text = await callOpenRouter(modelId, prompt, apiKey);
+      logger.info(`Calling Groq — model: ${modelId}`);
+      const text = await callGroq(modelId, prompt, apiKey);
       const analysis = parseAnalysis(text);
       logger.info(`AI analysis complete — model: ${modelId}`);
       return { analysis, error: null };
@@ -294,24 +229,19 @@ export async function analyzeArticles(
       logger.error(`Model ${modelId} failed: ${msg}`);
       modelErrors.push(`[${modelId}] ${msg.replace(/^[A-Z_]+:\s*/, "")}`);
 
-      // Auth/key/quota errors affect all models — stop immediately
-      if (
-        msg.startsWith("QUOTA_OR_KEY:") ||
-        msg.startsWith("QUOTA_EXCEEDED:")
-      ) {
+      // Invalid key — no point trying other models
+      if (msg.startsWith("QUOTA_OR_KEY:")) {
         return { analysis: null, error: msg.replace(/^[A-Z_]+:\s*/, "") };
       }
 
-      // Brief pause before next model
-      if (i < models.length - 1) {
+      if (i < GROQ_MODELS.length - 1) {
         await new Promise((r) => setTimeout(r, 300));
       }
     }
   }
 
-  const combinedErrors = modelErrors.join(" | ");
   return {
     analysis: null,
-    error: combinedErrors || "AI analysis failed for unknown reason.",
+    error: modelErrors.join(" | ") || "AI analysis failed for unknown reason.",
   };
 }
