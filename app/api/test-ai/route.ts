@@ -1,33 +1,33 @@
 /**
  * Diagnostic endpoint — GET /api/test-ai
- * Verifies OpenRouter API key and connectivity with a tiny test prompt.
+ * Verifies Groq API key and connectivity with a tiny test prompt.
  * Returns JSON {ok, model, error, hint} — safe to visit in browser.
  */
 import { NextResponse } from "next/server";
 
 export const runtime = "edge";
 
-interface OpenRouterResponse {
+interface GroqResponse {
   choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
-  error?: { message: string; code?: number; type?: string };
+  error?: { message: string; type?: string };
   model?: string;
 }
 
 export async function GET(): Promise<NextResponse> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = process.env.GROQ_API_KEY;
 
   if (!apiKey) {
     return NextResponse.json({
       ok: false,
       step: "env",
-      error: "OPENROUTER_API_KEY is not set.",
+      error: "GROQ_API_KEY is not set.",
       hint:
         "Go to Vercel → your project → Settings → Environment Variables. " +
-        "Add OPENROUTER_API_KEY with your key from openrouter.ai/keys, then redeploy.",
+        "Add GROQ_API_KEY with your key from console.groq.com/keys, then redeploy.",
     });
   }
 
-  const model = "google/gemini-2.0-flash-exp:free";
+  const model = "llama-3.3-70b-versatile";
 
   try {
     const controller = new AbortController();
@@ -35,13 +35,11 @@ export async function GET(): Promise<NextResponse> {
 
     let response: Response;
     try {
-      response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
-          "HTTP-Referer": "https://oil-gas-intelligence.vercel.app",
-          "X-Title": "Oil & Gas Intelligence Report Generator",
         },
         body: JSON.stringify({
           model,
@@ -55,27 +53,20 @@ export async function GET(): Promise<NextResponse> {
       clearTimeout(timer);
     }
 
-    const data = (await response.json()) as OpenRouterResponse;
+    const data = (await response.json()) as GroqResponse;
 
     if (data.error) {
-      const { code, type, message } = data.error;
       return NextResponse.json({
         ok: false,
         step: "api_call",
         httpStatus: response.status,
-        code,
-        type,
-        error: message,
+        error: data.error.message,
         hint:
           response.status === 401
-            ? "API key is invalid. Get a fresh key at openrouter.ai/keys"
-            : response.status === 402
-            ? "No credits. Add credits at openrouter.ai/credits (free models need $1 minimum)"
+            ? "API key is invalid. Get a fresh key at console.groq.com/keys"
             : response.status === 429
-            ? "Rate limit hit. Wait 60 seconds and try again."
-            : response.status === 404
-            ? `Model "${model}" not found. It may have been renamed — check openrouter.ai/models`
-            : "Check openrouter.ai for account status.",
+            ? "Rate limit hit. Wait a minute and try again."
+            : "Check console.groq.com for account status.",
       });
     }
 
@@ -84,8 +75,7 @@ export async function GET(): Promise<NextResponse> {
       ok: true,
       model: data.model ?? model,
       response: content.trim(),
-      message:
-        "OpenRouter is working correctly. AI analysis will appear in reports.",
+      message: "Groq is working correctly. AI analysis will appear in reports.",
     });
   } catch (err) {
     const msg = (err as Error).message;
@@ -94,8 +84,8 @@ export async function GET(): Promise<NextResponse> {
       step: "fetch",
       error: msg,
       hint: msg.includes("abort")
-        ? "Request timed out after 10s — OpenRouter may be temporarily unreachable."
-        : "Network error reaching OpenRouter.",
+        ? "Request timed out after 10s — Groq may be temporarily unreachable."
+        : "Network error reaching Groq.",
     });
   }
 }
