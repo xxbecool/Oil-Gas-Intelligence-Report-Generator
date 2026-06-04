@@ -70,7 +70,7 @@ function sanitizeText(text: string): string {
     .replace(/–/g, "-")
     .replace(/—/g, "--")
     .replace(/…/g, "...")
-    .replace(/[^\x00-\x7F]/g, "?");
+    .replace(/[^\x00-\x7F]/g, "");
 }
 
 // ── Page management ──────────────────────────────────────────────────────────
@@ -521,13 +521,13 @@ async function drawRisksOpportunities(
 ): Promise<void> {
   await drawSectionHeader(state, "6", "Risks");
   for (const risk of risks) {
-    await drawBulletItem(state, risk, "▸", COLORS.riskRed, COLORS.darkGray);
+    await drawBulletItem(state, risk, ">", COLORS.riskRed, COLORS.darkGray);
   }
   state.y -= 8;
 
   await drawSectionHeader(state, "7", "Opportunities");
   for (const opp of opportunities) {
-    await drawBulletItem(state, opp, "▸", COLORS.opportunityGreen, COLORS.darkGray);
+    await drawBulletItem(state, opp, ">", COLORS.opportunityGreen, COLORS.darkGray);
   }
   state.y -= 8;
 }
@@ -537,7 +537,7 @@ async function drawRisksOpportunities(
 async function drawWatchlist(state: DrawState, watchlist: string[]): Promise<void> {
   await drawSectionHeader(state, "8", "Things To Watch");
   for (const item of watchlist) {
-    await drawBulletItem(state, item, "→", COLORS.watchBlue, COLORS.darkGray);
+    await drawBulletItem(state, item, ">", COLORS.watchBlue, COLORS.darkGray);
   }
   state.y -= 8;
 }

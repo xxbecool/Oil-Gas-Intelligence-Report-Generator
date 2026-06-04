@@ -29,7 +29,7 @@ export function ErrorState({ message, onRetry }: ErrorStateProps) {
           <li>News sources temporarily unavailable</li>
           <li>AI service timeout (try disabling AI analysis)</li>
           <li>Network connectivity issue</li>
-          <li>Gemini API key not configured</li>
+          <li>Groq API key not configured (check Vercel env vars)</li>
         </ul>
       </div>
 
